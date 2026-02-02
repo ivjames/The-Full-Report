@@ -26,6 +26,7 @@ def index():
         categories=categories,
         active_category=category,
         query=query or "",
+        format_bytes=format_bytes,
     )
 
 
@@ -34,7 +35,19 @@ def file_detail(file_id: int):
     record = get_file(file_id)
     if not record:
         abort(404)
-    return render_template("file_detail.html", file=record)
+    return render_template("file_detail.html", file=record, format_bytes=format_bytes)
+
+
+def format_bytes(size: int | None) -> str:
+    if size is None:
+        return "Unknown size"
+    units = ["B", "KB", "MB", "GB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
 
 
 if __name__ == "__main__":

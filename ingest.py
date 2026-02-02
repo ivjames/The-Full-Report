@@ -1,5 +1,7 @@
 import argparse
 import hashlib
+import re
+import zipfile
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -101,24 +103,19 @@ def derive_title(link_tag, fallback: str) -> str:
 def parse_listing(html: str, base_url: str) -> list[dict[str, str | None]]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict[str, str | None]] = []
-    category_elements = soup.select(SCRAPE_CONFIG.category_selector)
-    categories = {el.get("data-category") for el in category_elements if el.get("data-category")}
 
     for link in soup.select(SCRAPE_CONFIG.file_link_selector):
         href = link.get("href")
         if not href:
             continue
-        title = derive_title(link, href)
-        category = link.get("data-category") or link.get("data-tag")
+        dataset = derive_dataset_label(href)
         results.append(
             {
-                "title": title,
-                "category": category,
+                "dataset": dataset,
                 "source_url": urljoin(base_url, href),
             }
         )
 
-    upsert_categories(sorted(categories))
     return results
 
 
@@ -152,11 +149,23 @@ def download_file(session: requests.Session, url: str) -> tuple[bytes, str]:
     return payload, sha256_bytes(payload)
 
 
-def save_payload(payload: bytes, filename: str) -> Path:
-    FILES_DIR.mkdir(parents=True, exist_ok=True)
-    path = FILES_DIR / filename
-    path.write_bytes(payload)
-    return path
+def safe_extract(zip_path: Path, target_dir: Path) -> list[Path]:
+    extracted: list[Path] = []
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as archive:
+        for member in archive.infolist():
+            if member.is_dir():
+                continue
+            member_path = Path(member.filename)
+            destination = target_dir / member_path
+            resolved = destination.resolve()
+            if not str(resolved).startswith(str(target_dir.resolve())):
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, destination.open("wb") as dest_handle:
+                dest_handle.write(source.read())
+            extracted.append(destination)
+    return extracted
 
 
 def ingest_listings(
@@ -209,11 +218,15 @@ def ingest_listings(
             filename = Path(entry["source_url"]).name or f"file-{count}.bin"
             saved_path = save_payload(payload, filename)
             insert_file(
-                title=entry["title"] or filename,
-                category=entry["category"],
-                source_url=entry["source_url"],
-                local_path=str(saved_path),
-                sha256=checksum,
+                title=extracted_path.name,
+                category=dataset,
+                source_url=source_url,
+                source_path=str(extracted_path.relative_to(target_dir)),
+                local_path=str(extracted_path),
+                sha256=file_checksum,
+                file_size=extracted_path.stat().st_size,
+                file_type=extracted_path.suffix.lstrip(".") or None,
+                batch_checksum=zip_checksum,
             )
             count += 1
 

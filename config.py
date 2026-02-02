@@ -7,6 +7,8 @@ class ScrapeConfig:
     base_url: str
     listing_paths: tuple[str, ...]
     file_link_selector: str
+    dataset_label_pattern: str
+    dataset_label_prefix: str
     category_selector: str
     title_selector: str
 
@@ -19,6 +21,8 @@ SCRAPE_CONFIG = ScrapeConfig(
     base_url="https://www.justice.gov",
     listing_paths=("/epstein/court-records", "/epstein/doj-disclosures",),
     file_link_selector="a[href]",
+    dataset_label_pattern=r".*",
+    dataset_label_prefix="",
     category_selector="[data-category]",
     title_selector="[data-title]",
 )
