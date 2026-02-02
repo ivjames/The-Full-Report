@@ -3,101 +3,53 @@ import hashlib
 import re
 import zipfile
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
-try:
-    from playwright.sync_api import sync_playwright
-except Exception:  # pragma: no cover - optional dependency
-    sync_playwright = None
-
-from config import FILES_DIR, SCRAPE_CONFIG
-from db import init_db, insert_file, upsert_categories
-
-
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/121.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "DNT": "1",
-}
+from config import DATA_DIR, FILES_DIR, SCRAPE_CONFIG
+from db import init_db, insert_file
 
 
 def build_session() -> requests.Session:
     session = requests.Session()
-    session.headers.update(DEFAULT_HEADERS)
+    session.headers.update(SCRAPE_CONFIG.request_headers)
     return session
 
 
-def prime_session(session: requests.Session) -> None:
-    try:
-        session.get(SCRAPE_CONFIG.base_url, timeout=30)
-    except requests.RequestException:
-        return
+def resolve_listing_url(path_or_url: str) -> str:
+    parsed = urlparse(path_or_url)
+    if parsed.scheme and parsed.netloc:
+        return path_or_url
+    return urljoin(SCRAPE_CONFIG.base_url, path_or_url)
 
 
-def ensure_playwright_available() -> None:
-    if sync_playwright is None:
+def fetch_html(session: requests.Session, url: str) -> str:
+    response = session.get(url, timeout=30)
+    if response.status_code == 403:
         raise RuntimeError(
-            "Playwright is required for DOJ pages that block direct requests. "
-            "Install the playwright package and its browsers."
+            f"Received 403 for {url}. The DOJ disclosures page "
+            "(/epstein/doj-disclosures) is accessible; update listing_paths or "
+            "pass --listing to target that page."
         )
+    response.raise_for_status()
+    return response.text
 
 
-def fetch_bytes_via_browser(url: str, *, referer: str | None = None) -> bytes:
-    ensure_playwright_available()
-    assert sync_playwright is not None
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        extra_headers = dict(DEFAULT_HEADERS)
-        if referer:
-            extra_headers["Referer"] = referer
-        context = browser.new_context(extra_http_headers=extra_headers)
-        page = context.new_page()
-        response = page.goto(url, wait_until="networkidle")
-        if response is None or response.status >= 400:
-            browser.close()
-            status = response.status if response else "unknown"
-            raise RuntimeError(f"Browser fetch failed with status {status} for {url}")
-        payload = response.body()
-        browser.close()
-        return payload
+def sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def fetch_html_via_browser(url: str) -> str:
-    ensure_playwright_available()
-    assert sync_playwright is not None
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        extra_headers = dict(DEFAULT_HEADERS)
-        extra_headers["Referer"] = SCRAPE_CONFIG.base_url
-        context = browser.new_context(extra_http_headers=extra_headers)
-        page = context.new_page()
-        response = page.goto(url, wait_until="networkidle")
-        if response is None or response.status >= 400:
-            browser.close()
-            status = response.status if response else "unknown"
-            raise RuntimeError(f"Browser fetch failed with status {status} for {url}")
-        html = page.content()
-        browser.close()
-        return html
-
-
-def sha256_bytes(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def derive_title(link_tag, fallback: str) -> str:
-    title_candidate = link_tag.get("data-title") or link_tag.get_text(strip=True)
-    return title_candidate or fallback
+def derive_dataset_label(href: str) -> str | None:
+    match = re.search(SCRAPE_CONFIG.dataset_label_pattern, href, re.IGNORECASE)
+    if not match:
+        return None
+    return f"{SCRAPE_CONFIG.dataset_label_prefix} {match.group(1)}"
 
 
 def parse_listing(html: str, base_url: str) -> list[dict[str, str | None]]:
@@ -119,34 +71,18 @@ def parse_listing(html: str, base_url: str) -> list[dict[str, str | None]]:
     return results
 
 
-def fetch_response(
-    session: requests.Session, url: str, *, referer: str | None = None
-) -> requests.Response:
-    headers: dict[str, str] = {}
-    if referer:
-        headers["Referer"] = referer
-    response = session.get(url, timeout=30, headers=headers)
-    if response.status_code == 403:
-        prime_session(session)
-        retry_headers = {"Referer": referer or SCRAPE_CONFIG.base_url}
-        response = session.get(
-            url,
-            timeout=30,
-            headers=retry_headers,
-        )
-    response.raise_for_status()
-    return response
-
-
-def download_file(session: requests.Session, url: str) -> tuple[bytes, str]:
-    try:
-        response = fetch_response(session, url, referer=SCRAPE_CONFIG.base_url)
-        payload = response.content
-    except requests.HTTPError as exc:
-        if exc.response is None or exc.response.status_code != 403:
-            raise
-        payload = fetch_bytes_via_browser(url, referer=SCRAPE_CONFIG.base_url)
-    return payload, sha256_bytes(payload)
+def download_zip(session: requests.Session, url: str, target_path: Path) -> str:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    with session.get(url, timeout=60, stream=True) as response:
+        response.raise_for_status()
+        with target_path.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                handle.write(chunk)
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def safe_extract(zip_path: Path, target_dir: Path) -> list[Path]:
@@ -170,53 +106,42 @@ def safe_extract(zip_path: Path, target_dir: Path) -> list[Path]:
 
 def ingest_listings(
     limit: int | None,
-    listing_html_paths: list[Path] | None,
-    skip_download: bool,
+    latest_only: bool,
+    listing_paths: tuple[str, ...],
 ) -> None:
     init_db()
     session = build_session()
-    prime_session(session)
     count = 0
-    listing_sources: list[tuple[str, str]] = []
+    all_entries: list[dict[str, str | None]] = []
+    for path in listing_paths:
+        listing_url = resolve_listing_url(path)
+        html = fetch_html(session, listing_url)
+        all_entries.extend(parse_listing(html, SCRAPE_CONFIG.base_url))
 
-    if listing_html_paths:
-        for html_path in listing_html_paths:
-            listing_sources.append(
-                (str(html_path), html_path.read_text(encoding="utf-8"))
-            )
-    else:
-        for path in SCRAPE_CONFIG.listing_paths:
-            listing_url = urljoin(SCRAPE_CONFIG.base_url, path)
-            try:
-                response = fetch_response(
-                    session, listing_url, referer=SCRAPE_CONFIG.base_url
-                )
-                html = response.text
-            except requests.HTTPError as exc:
-                if exc.response is None or exc.response.status_code != 403:
-                    raise
-                html = fetch_html_via_browser(listing_url)
-            listing_sources.append((listing_url, html))
+    entries = [entry for entry in all_entries if entry.get("source_url")]
+    if latest_only and entries:
+        def dataset_number(entry: dict[str, str | None]) -> int:
+            label = entry.get("dataset") or ""
+            match = re.search(r"(\d+)", label)
+            return int(match.group(1)) if match else -1
 
-    for listing_id, html in listing_sources:
-        entries = parse_listing(html, SCRAPE_CONFIG.base_url)
-        for entry in entries:
+        latest = max(entries, key=dataset_number)
+        entries = [latest]
+
+    for entry in entries:
+        if limit and count >= limit:
+            return
+        source_url = entry["source_url"]
+        dataset = entry.get("dataset") or "Uncategorized"
+        zip_name = Path(source_url).name.replace(" ", "_") or f"dataset-{count}.zip"
+        zip_path = DATA_DIR / "zips" / zip_name
+        zip_checksum = download_zip(session, source_url, zip_path)
+        target_dir = FILES_DIR / (dataset.replace(" ", "_") if dataset else "dataset")
+        extracted_files = safe_extract(zip_path, target_dir)
+        for extracted_path in extracted_files:
             if limit and count >= limit:
                 return
-            if skip_download:
-                filename = Path(entry["source_url"]).name or f"file-{count}.bin"
-                insert_file(
-                    title=entry["title"] or filename,
-                    category=entry["category"],
-                    source_url=entry["source_url"],
-                    local_path=None,
-                    sha256=None,
-                )
-                count += 1
-                continue
-            payload, checksum = download_file(session, entry["source_url"])
-            filename = Path(entry["source_url"]).name or f"file-{count}.bin"
-            saved_path = save_payload(payload, filename)
+            file_checksum = sha256_path(extracted_path)
             insert_file(
                 title=extracted_path.name,
                 category=dataset,
@@ -235,22 +160,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest files into the database.")
     parser.add_argument("--limit", type=int, default=None, help="Limit files ingested")
     parser.add_argument(
-        "--listing-html",
+        "--listing",
         action="append",
-        type=Path,
-        default=None,
-        help="Path to a locally saved listing HTML file (can be repeated).",
+        help="Override listing URL(s). Can be passed multiple times.",
     )
     parser.add_argument(
-        "--skip-download",
+        "--all",
         action="store_true",
-        help="Only store metadata; do not download files.",
+        help="Ingest all datasets instead of only the most recent",
     )
     args = parser.parse_args()
+    listing_paths = tuple(args.listing) if args.listing else SCRAPE_CONFIG.listing_paths
     ingest_listings(
         limit=args.limit,
-        listing_html_paths=args.listing_html,
-        skip_download=args.skip_download,
+        latest_only=not args.all,
+        listing_paths=listing_paths,
     )
 
 

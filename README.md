@@ -18,7 +18,8 @@ pip install -r requirements.txt
 
 ## Configure the scraper
 
-Update `config.py` with the base URL and HTML selectors that match the archive you want to ingest.
+The default configuration targets the DOJ Epstein disclosure page and identifies dataset ZIP links.
+Update `config.py` if the archive markup changes or you want to point at another source.
 
 ```python
 SCRAPE_CONFIG = ScrapeConfig(
@@ -37,6 +38,7 @@ python ingest.py --limit 25
 ```
 
 By default the script ingests the most recent dataset ZIP. Use `--all` to ingest every dataset listed on the page.
+If a listing URL returns 403, pass `--listing https://www.justice.gov/epstein/doj-disclosures` to override the source.
 
 The script downloads the ZIP files into `data/zips`, extracts files into `data/files`, and stores metadata in `data/epstein_files.sqlite3`.
 
@@ -49,6 +51,5 @@ python app.py
 Visit `http://localhost:8000` to search and filter the ingested files.
 
 ## Notes
-
 - Ensure you have permission to download and store the source documents.
 - Update selectors as needed for the specific HTML layout you are targeting.
