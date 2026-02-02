@@ -16,8 +16,8 @@ FILES_DIR = DATA_DIR / "files"
 DB_PATH = DATA_DIR / "epstein_files.sqlite3"
 
 SCRAPE_CONFIG = ScrapeConfig(
-    base_url="https://example.com",
-    listing_paths=("/files",),
+    base_url="https://www.justice.gov",
+    listing_paths=("/epstein/court-records", "/epstein/doj-disclosures",),
     file_link_selector="a[href]",
     category_selector="[data-category]",
     title_selector="[data-title]",

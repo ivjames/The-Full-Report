@@ -3,6 +3,7 @@
 This project provides a lightweight pipeline for indexing a large HTML document archive into a SQLite database, plus a minimal Flask UI for searching and reviewing metadata.
 
 ## Features
+
 - Configurable HTML scraping to collect file links and categories.
 - Local storage of downloaded files with SHA-256 hashing.
 - SQLite-backed UI for searching and filtering by category.
@@ -16,6 +17,7 @@ pip install -r requirements.txt
 ```
 
 ## Configure the scraper
+
 Update `config.py` with the base URL and HTML selectors that match the archive you want to ingest.
 
 ```python
@@ -45,5 +47,6 @@ python app.py
 Visit `http://localhost:8000` to search and filter the ingested files.
 
 ## Notes
+
 - Ensure you have permission to download and store the source documents.
 - Update selectors as needed for the specific HTML layout you are targeting.
