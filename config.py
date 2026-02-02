@@ -10,6 +10,8 @@ class ScrapeConfig:
     dataset_label_pattern: str
     dataset_label_prefix: str
     request_headers: dict[str, str]
+    category_selector: str
+    title_selector: str
 
 
 DATA_DIR = Path("data")

@@ -3,6 +3,7 @@
 This project provides a lightweight pipeline for indexing a large HTML document archive into a SQLite database, plus a minimal Flask UI for searching and reviewing metadata.
 
 ## Features
+
 - Configurable HTML scraping to collect file links and categories.
 - Local storage of downloaded files with SHA-256 hashing.
 - SQLite-backed UI for searching and filtering by category.
@@ -16,6 +17,7 @@ pip install -r requirements.txt
 ```
 
 ## Configure the scraper
+
 The default configuration targets the DOJ Epstein disclosure page and identifies dataset ZIP links.
 Update `config.py` if the archive markup changes or you want to point at another source.
 
