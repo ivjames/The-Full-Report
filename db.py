@@ -11,8 +11,12 @@ CREATE TABLE IF NOT EXISTS files (
     title TEXT NOT NULL,
     category TEXT,
     source_url TEXT NOT NULL,
+    source_path TEXT,
     local_path TEXT,
     sha256 TEXT,
+    file_size INTEGER,
+    file_type TEXT,
+    batch_checksum TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -37,6 +41,25 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
 def init_db() -> None:
     with get_connection() as connection:
         connection.executescript(SCHEMA)
+        ensure_columns(connection)
+
+
+def ensure_columns(connection: sqlite3.Connection) -> None:
+    existing = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(files)").fetchall()
+    }
+    required = {
+        "source_path": "TEXT",
+        "file_size": "INTEGER",
+        "file_type": "TEXT",
+        "batch_checksum": "TEXT",
+    }
+    for column, column_type in required.items():
+        if column not in existing:
+            connection.execute(
+                f"ALTER TABLE files ADD COLUMN {column} {column_type}"
+            )
 
 
 def upsert_categories(categories: Iterable[str]) -> None:
@@ -51,16 +74,40 @@ def insert_file(
     title: str,
     category: str | None,
     source_url: str,
+    source_path: str | None,
     local_path: str | None,
     sha256: str | None,
+    file_size: int | None,
+    file_type: str | None,
+    batch_checksum: str | None,
 ) -> None:
     with get_connection() as connection:
         connection.execute(
             """
-            INSERT INTO files (title, category, source_url, local_path, sha256)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO files (
+                title,
+                category,
+                source_url,
+                source_path,
+                local_path,
+                sha256,
+                file_size,
+                file_type,
+                batch_checksum
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (title, category, source_url, local_path, sha256),
+            (
+                title,
+                category,
+                source_url,
+                source_path,
+                local_path,
+                sha256,
+                file_size,
+                file_type,
+                batch_checksum,
+            ),
         )
 
 

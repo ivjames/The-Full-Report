@@ -16,15 +16,16 @@ pip install -r requirements.txt
 ```
 
 ## Configure the scraper
-Update `config.py` with the base URL and HTML selectors that match the archive you want to ingest.
+The default configuration targets the DOJ Epstein disclosure page and identifies dataset ZIP links.
+Update `config.py` if the archive markup changes or you want to point at another source.
 
 ```python
 SCRAPE_CONFIG = ScrapeConfig(
-    base_url="https://example.com",
-    listing_paths=("/files",),
-    file_link_selector="a[href]",
-    category_selector="[data-category]",
-    title_selector="[data-title]",
+    base_url="https://www.justice.gov",
+    listing_paths=("/epstein/doj-disclosures",),
+    file_link_selector="a[href$='.zip'], a[href$='.ZIP']",
+    dataset_label_pattern=r"DataSet\\s*(\\d+)",
+    dataset_label_prefix="Dataset",
 )
 ```
 
@@ -34,7 +35,9 @@ SCRAPE_CONFIG = ScrapeConfig(
 python ingest.py --limit 25
 ```
 
-The script downloads files into `data/files` and stores metadata in `data/epstein_files.sqlite3`.
+By default the script ingests the most recent dataset ZIP. Use `--all` to ingest every dataset listed on the page.
+
+The script downloads the ZIP files into `data/zips`, extracts files into `data/files`, and stores metadata in `data/epstein_files.sqlite3`.
 
 ## Run the UI
 
