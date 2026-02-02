@@ -3,49 +3,31 @@ import hashlib
 import re
 import zipfile
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
-try:
-    from playwright.sync_api import sync_playwright
-except Exception:  # pragma: no cover - optional dependency
-    sync_playwright = None
-
 from config import DATA_DIR, FILES_DIR, SCRAPE_CONFIG
-from db import init_db, insert_file, upsert_categories
-
-
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/121.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "DNT": "1",
-}
+from db import init_db, insert_file
 
 
 def build_session() -> requests.Session:
     session = requests.Session()
-    session.headers.update(DEFAULT_HEADERS)
+    session.headers.update(SCRAPE_CONFIG.request_headers)
     return session
 
 
-def prime_session(session: requests.Session) -> None:
-    try:
-        session.get(SCRAPE_CONFIG.base_url, timeout=30)
-    except requests.RequestException:
-        return
+def resolve_listing_url(path_or_url: str) -> str:
+    parsed = urlparse(path_or_url)
+    if parsed.scheme and parsed.netloc:
+        return path_or_url
+    return urljoin(SCRAPE_CONFIG.base_url, path_or_url)
 
 
-def ensure_playwright_available() -> None:
-    if sync_playwright is None:
+def fetch_html(session: requests.Session, url: str) -> str:
+    response = session.get(url, timeout=30)
+    if response.status_code == 403:
         raise RuntimeError(
             "Playwright is required for DOJ pages that block direct requests. "
             "Install the playwright package and its browsers."
@@ -212,12 +194,11 @@ def safe_extract(zip_path: Path, target_dir: Path) -> list[Path]:
 
 def ingest_listings(
     limit: int | None,
-    listing_html_paths: list[Path] | None,
-    skip_download: bool,
+    latest_only: bool,
+    listing_paths: tuple[str, ...],
 ) -> None:
     init_db()
     session = build_session()
-    prime_session(session)
     count = 0
     listing_sources: list[tuple[str, str]] = []
 
@@ -313,22 +294,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest files into the database.")
     parser.add_argument("--limit", type=int, default=None, help="Limit files ingested")
     parser.add_argument(
-        "--listing-html",
+        "--listing",
         action="append",
-        type=Path,
-        default=None,
-        help="Path to a locally saved listing HTML file (can be repeated).",
+        help="Override listing URL(s). Can be passed multiple times.",
     )
     parser.add_argument(
-        "--skip-download",
+        "--all",
         action="store_true",
-        help="Only store metadata; do not download files.",
+        help="Ingest all datasets instead of only the most recent",
     )
     args = parser.parse_args()
+    listing_paths = tuple(args.listing) if args.listing else SCRAPE_CONFIG.listing_paths
     ingest_listings(
         limit=args.limit,
-        listing_html_paths=args.listing_html,
-        skip_download=args.skip_download,
+        latest_only=not args.all,
+        listing_paths=listing_paths,
     )
 
 
