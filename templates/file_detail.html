@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="detail">
+  <h2>{{ file['title'] }}</h2>
+  <dl>
+    <dt>Dataset</dt>
+    <dd>{{ file['category'] or "Uncategorized" }}</dd>
+    <dt>Source URL</dt>
+    <dd><a href="{{ file['source_url'] }}">{{ file['source_url'] }}</a></dd>
+    <dt>Source Path</dt>
+    <dd>{{ file['source_path'] or "Unknown" }}</dd>
+    <dt>Local Path</dt>
+    <dd>{{ file['local_path'] or "Not downloaded" }}</dd>
+    <dt>File Size</dt>
+    <dd>{{ format_bytes(file['file_size']) }}</dd>
+    <dt>File Type</dt>
+    <dd>{{ file['file_type'] or "Unknown" }}</dd>
+    <dt>SHA-256</dt>
+    <dd>{{ file['sha256'] or "Not available" }}</dd>
+    <dt>Batch Checksum</dt>
+    <dd>{{ file['batch_checksum'] or "Not available" }}</dd>
+    <dt>Ingested</dt>
+    <dd>{{ file['created_at'] }}</dd>
+  </dl>
+  <a class="button" href="{{ url_for('index') }}">Back to results</a>
+</section>
+{% endblock %}
