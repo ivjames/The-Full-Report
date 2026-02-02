@@ -13,7 +13,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     sync_playwright = None
 
-from config import FILES_DIR, SCRAPE_CONFIG
+from config import DATA_DIR, FILES_DIR, SCRAPE_CONFIG
 from db import init_db, insert_file, upsert_categories
 
 
@@ -100,21 +100,40 @@ def derive_title(link_tag, fallback: str) -> str:
     return title_candidate or fallback
 
 
+def derive_dataset_label(href: str) -> str | None:
+    match = re.search(SCRAPE_CONFIG.dataset_label_pattern, href, re.IGNORECASE)
+    if not match:
+        return None
+    label = match.group(1) if match.groups() else match.group(0)
+    label = label.replace("-", " ").replace("_", " ").strip()
+    if not label:
+        return None
+    return f"{SCRAPE_CONFIG.dataset_label_prefix}{label}".strip() or None
+
+
 def parse_listing(html: str, base_url: str) -> list[dict[str, str | None]]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict[str, str | None]] = []
+    categories: set[str] = set()
 
     for link in soup.select(SCRAPE_CONFIG.file_link_selector):
         href = link.get("href")
         if not href:
             continue
-        dataset = derive_dataset_label(href)
+        title = derive_title(link, href)
+        category = derive_dataset_label(href)
+        if category:
+            categories.add(category)
         results.append(
             {
-                "dataset": dataset,
+                "title": title,
+                "category": category,
                 "source_url": urljoin(base_url, href),
             }
         )
+
+    if categories:
+        upsert_categories(sorted(categories))
 
     return results
 
@@ -147,6 +166,29 @@ def download_file(session: requests.Session, url: str) -> tuple[bytes, str]:
             raise
         payload = fetch_bytes_via_browser(url, referer=SCRAPE_CONFIG.base_url)
     return payload, sha256_bytes(payload)
+
+
+def save_payload(payload: bytes, filename: str) -> Path:
+    FILES_DIR.mkdir(parents=True, exist_ok=True)
+    path = FILES_DIR / filename
+    path.write_bytes(payload)
+    return path
+
+
+def find_cached_listing(listing_path: str) -> Path | None:
+    cache_dir = DATA_DIR / "listings"
+    if not cache_dir.exists():
+        return None
+    name = Path(listing_path).name or "listing"
+    candidates = [
+        cache_dir / f"{name}.html",
+        cache_dir / name,
+        cache_dir / f"{name}.htm",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def safe_extract(zip_path: Path, target_dir: Path) -> list[Path]:
@@ -187,6 +229,12 @@ def ingest_listings(
     else:
         for path in SCRAPE_CONFIG.listing_paths:
             listing_url = urljoin(SCRAPE_CONFIG.base_url, path)
+            cached = find_cached_listing(path)
+            if cached:
+                listing_sources.append(
+                    (listing_url, cached.read_text(encoding="utf-8"))
+                )
+                continue
             try:
                 response = fetch_response(
                     session, listing_url, referer=SCRAPE_CONFIG.base_url
@@ -195,7 +243,14 @@ def ingest_listings(
             except requests.HTTPError as exc:
                 if exc.response is None or exc.response.status_code != 403:
                     raise
-                html = fetch_html_via_browser(listing_url)
+                try:
+                    html = fetch_html_via_browser(listing_url)
+                except RuntimeError:
+                    raise RuntimeError(
+                        "Listing page blocked by DOJ bot protection. "
+                        "Save the page HTML in data/listings (e.g. "
+                        "data/listings/court-records.html) or pass --listing-html."
+                    )
             listing_sources.append((listing_url, html))
 
     for listing_id, html in listing_sources:
@@ -209,25 +264,48 @@ def ingest_listings(
                     title=entry["title"] or filename,
                     category=entry["category"],
                     source_url=entry["source_url"],
+                    source_path=None,
                     local_path=None,
                     sha256=None,
+                    file_size=None,
+                    file_type=None,
+                    batch_checksum=None,
                 )
                 count += 1
                 continue
             payload, checksum = download_file(session, entry["source_url"])
             filename = Path(entry["source_url"]).name or f"file-{count}.bin"
             saved_path = save_payload(payload, filename)
-            insert_file(
-                title=extracted_path.name,
-                category=dataset,
-                source_url=source_url,
-                source_path=str(extracted_path.relative_to(target_dir)),
-                local_path=str(extracted_path),
-                sha256=file_checksum,
-                file_size=extracted_path.stat().st_size,
-                file_type=extracted_path.suffix.lstrip(".") or None,
-                batch_checksum=zip_checksum,
-            )
+
+            if saved_path.suffix.lower() == ".zip":
+                target_dir = FILES_DIR / saved_path.stem
+                extracted = safe_extract(saved_path, target_dir)
+                for extracted_path in extracted:
+                    file_payload = extracted_path.read_bytes()
+                    file_checksum = sha256_bytes(file_payload)
+                    insert_file(
+                        title=extracted_path.name,
+                        category=entry["category"],
+                        source_url=entry["source_url"],
+                        source_path=str(extracted_path.relative_to(target_dir)),
+                        local_path=str(extracted_path),
+                        sha256=file_checksum,
+                        file_size=extracted_path.stat().st_size,
+                        file_type=extracted_path.suffix.lstrip(".") or None,
+                        batch_checksum=checksum,
+                    )
+            else:
+                insert_file(
+                    title=entry["title"] or saved_path.name,
+                    category=entry["category"],
+                    source_url=entry["source_url"],
+                    source_path=None,
+                    local_path=str(saved_path),
+                    sha256=checksum,
+                    file_size=saved_path.stat().st_size,
+                    file_type=saved_path.suffix.lstrip(".") or None,
+                    batch_checksum=None,
+                )
             count += 1
 
 

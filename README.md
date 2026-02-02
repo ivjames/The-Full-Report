@@ -36,6 +36,19 @@ SCRAPE_CONFIG = ScrapeConfig(
 python ingest.py --limit 25
 ```
 
+### DOJ listings (manual HTML)
+
+The DOJ listing pages block automated requests in many environments. If you hit a 403, save the listing pages in a browser and use one of these options:
+
+- Put them in data/listings as:
+    - data/listings/court-records.html
+    - data/listings/doj-disclosures.html
+- Or pass paths explicitly:
+
+```bash
+python ingest.py --listing-html path/to/court-records.html --listing-html path/to/doj-disclosures.html --skip-download
+```
+
 By default the script ingests the most recent dataset ZIP. Use `--all` to ingest every dataset listed on the page.
 
 The script downloads the ZIP files into `data/zips`, extracts files into `data/files`, and stores metadata in `data/epstein_files.sqlite3`.
