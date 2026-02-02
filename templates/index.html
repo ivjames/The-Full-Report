@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="filters">
+  <form method="get" class="search-form">
+    <input type="text" name="q" placeholder="Search titles" value="{{ query }}" />
+    <select name="category">
+      <option value="">All categories</option>
+      {% for category in categories %}
+        <option value="{{ category['category'] }}" {% if category['category'] == active_category %}selected{% endif %}>
+          {{ category['category'] or "Uncategorized" }} ({{ category['total'] }})
+        </option>
+      {% endfor %}
+    </select>
+    <button type="submit">Filter</button>
+  </form>
+</section>
+
+<section class="results">
+  <h2>Documents</h2>
+  {% if files %}
+    <ul class="file-list">
+      {% for file in files %}
+        <li>
+          <a href="{{ url_for('file_detail', file_id=file['id']) }}">{{ file['title'] }}</a>
+          <span class="meta">{{ file['category'] or "Uncategorized" }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No documents found. Run the ingest script to populate the database.</p>
+  {% endif %}
+</section>
+{% endblock %}
